@@ -14,6 +14,13 @@ module "ec2_instance" {
   monitoring             = true
   vpc_security_group_ids = tolist([module.network.securitygroupid])
   subnet_id              = module.network.publicsubnet[0]
+  user_data              = <<-EOF
+    #!/bin/bash
+    sudo yum install http* -y
+    sudo systemctl restart httpd
+    sudo chown -R $USER:$USER /var/www/html
+    sudo echo "<html><body><h1>Hello , This is the webserver</h1></body></html>" >> /var/www/html/index.html
+    EOF
 
   tags = {
     Terraform   = "true"

@@ -26,3 +26,5 @@ can be ssh'd from outside world but private instance will work from the nat inst
 and execute below command from the local machine
 
 ssh -i <sshkeycopied file>  ec2-user@<IP of the instance>
+
+use http://<publicinstance IP>
