@@ -1,0 +1,77 @@
+
+- name: Creating Snapshot for servers
+  hosts: all
+  gather_facts: false
+
+  vars:
+    stage: snapshot
+
+  tasks:
+
+  - import_tasks: read_status.yml
+
+  - import_tasks: apvpass.yml
+
+  - name: Update InProgress status in apex dashboard
+    uri:
+      url: 'https://{{ordsHostName}}:{{ordsPort}}/ords/timsdbc/autopatchmodule/axp_patching_status'
+      method: POST
+      body_format: form-urlencoded
+      body: servername={{inventory_hostname}}&dashboard_month={{dashboard_month}}&status=IN PROGRESS
+      return_content: yes
+    register: snapuri_read_api_status
+    delegate_to: localhost
+
+
+  - name: Calculating Localdate
+    shell: date +%F
+    register: localdate
+    run_once: yes
+    delegate_to: localhost
+
+  - name: Taking Snapshot
+    vmware_guest_snapshot:
+      hostname: "{{hostvars[inventory_hostname].vcenter}}"
+      username: "{{apvuser}}"
+      password: "{{apvpass}}"
+      validate_certs: no
+      moid: "{{hostvars[inventory_hostname].moid}}"
+      datacenter: "{{hostvars[inventory_hostname].datacenter}}"
+      state: present
+      snapshot_name: "GLTIMS_PATCHING_{{localdate.stdout}}"
+      description: "GLTIMS_PATCHING_{{localdate.stdout}}"
+    ignore_errors: true
+    delegate_to: localhost
+    register: snapshot_info
+    when: hostvars[inventory_hostname].physical is not defined and  hostvars[inventory_hostname].skip_snapshot is not defined
+
+
+  - name: Snapshot Skipped
+    set_fact: snapstatus="Snapshot skipped as requested."
+    when:  hostvars[inventory_hostname].skip_snapshot is defined
+
+  - name: PHYSICAL Server
+    set_fact: snapstatus="PHYSICAL Server. Snapshot not required"
+    when: hostvars[inventory_hostname].physical is defined
+
+  - name: Snapshot taken
+    set_fact: snapstatus="Snapshot taken"
+    when: snapshot_info.changed
+
+  - name: Snapshot already available
+    set_fact: snapstatus="Snapshot already available with same name"
+    when:  hostvars[inventory_hostname].physical is not defined and  hostvars[inventory_hostname].skip_snapshot is not defined and not snapshot_info.changed and 'already exists' in snapshot_info.msg
+
+  - name: Snapshot Final Status
+    debug: msg="{{snapstatus}}"
+    when: snapstatus is defined
+
+  - name: BLOCK
+    block:
+      - name: Snapshot Failed
+        fail: msg="{{snapshot_info.msg}}"
+        when: snapstatus is not defined and snapshot_info.msg is defined
+        register: forcefail
+
+    always:
+      - import_tasks: update_status.yml

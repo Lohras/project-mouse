@@ -1,0 +1,383 @@
+- name: Playbook for moving the ctask from Open to In-progress for implementation types
+  hosts: all
+  gather_facts: no
+  vars:
+    stage: snowvalidation
+  vars_files:
+    - /apps/gltims-patchingautomation/.itsm_e3
+
+  tasks:
+
+  - import_tasks: read_status.yml
+
+  - name: Current Time in Second
+    delegate_to: localhost
+    shell: "echo `date +%s`"
+    register: current_time
+    run_once: yes
+
+  - name: Current time of Execution
+    delegate_to: localhost
+    shell:  "echo `date +%F_%H-%M-%S_%N`"
+    register: current_date
+    run_once: yes
+
+  - name: Creating directory with {{current_date.stdout}} on {{ snow_log_path }}
+    file:
+      path: "{{ snow_log_path }}/{{current_date.stdout}}"
+      state: directory
+    delegate_to: localhost
+
+  - name: generate the token for snow api
+    uri:
+      url: "{{SN_URL}}/ldap/auth/token?search_type=generate"
+      url_username: '{{snow_username}}'
+      url_password: "{{snow_pass}}"
+      method: POST
+      force_basic_auth: yes
+      validate_certs: no
+      body_format: json
+      status_code: 200
+    register: gen_token
+    ignore_errors: true
+    run_once: yes
+    delegate_to: localhost
+
+  - name: unable to generate the token
+    fail:
+      msg: "{{gen_token.msg}}"
+    run_once: yes
+    when: gen_token.status != 200
+
+  - name: unable to generate the token
+    fail:
+      msg: "{{gen_token.json.error_reason}}"
+    run_once: yes
+    when: gen_token.status == 200 and gen_token.json.error_reason is defined
+
+  - import_tasks: fetching_ctask.yml
+
+  - name: Set fact
+    set_fact:
+      start_date: "{{(ctask_check.results[index].json.details[0].task.planned_start_date | regex_replace('T', ' ') | regex_replace('-07:00', '') | to_datetime).strftime('%s') }}"
+      end_date:   "{{(ctask_check.results[index].json.details[0].task.planned_end_date | regex_replace('T', ' ') | regex_replace('-07:00', '') | to_datetime).strftime('%s') }}"
+      ctask_state:  "{{ctask_check.results[index].json.details[0].task.task_state }}"
+      ctask_type: "{{ctask_check.results[index].json.details[0].task.change_task_type }}"
+      change_number: "{{ctask_check.results[index].json.details[0].task.change_number}}"
+    with_items:
+      - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    register: ctaskresults
+    run_once: yes
+    delegate_to: localhost
+
+  - set_fact:
+      rfc_number: "{{ rfc_number|default([]) + [ctaskresults.results[index].ansible_facts.change_number] }}"
+    when: current_time.stdout  >= ctaskresults.results[index].ansible_facts.start_date and current_time.stdout <= ctaskresults.results[index].ansible_facts.end_date
+    with_items:
+      - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+
+  - name: Fetching rfc detail from API
+    uri:
+      url: "{{SN_URL}}/changes?search_type=view_change&ChangeNumber={{item}}"
+      force_basic_auth: yes
+      validate_certs: no
+      body_format: json
+      headers:
+        Authorization: "Bearer {{gen_token.json.access_token}}"
+      return_content: yes
+      status_code: 200
+      dest: "{{ snow_log_path }}/{{current_date.stdout}}/{{item}}_rfcdetails.txt"
+    register: change_check
+    ignore_errors: true
+    with_items:
+      - "{{rfc_number | unique}}"
+    when: rfc_number is defined
+    loop_control:
+      index_var: index
+    run_once: yes
+    delegate_to: localhost
+
+  - name:  change URL is inaccessible
+    fail:
+      msg: "{{change_check.results[index].msg}}"
+    with_items:
+       - "{{rfc_number | unique}}"
+    loop_control:
+      index_var: index
+    run_once: yes
+    when: rfc_number is defined and change_check.results[index].status != 200
+
+  - set_fact:
+      rfc_with_state: "{{ rfc_with_state|default([]) + [{'Change': item , 'State': change_check.results[index].json.details[0].change.change_state}]}}"
+    when: rfc_number is defined and change_check.results[index].json.details[0].change.change_state != 'Implement'
+    with_items:
+      - "{{rfc_number | unique}}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+  - fail:
+      msg:
+        - "Kindly check the rfc state"
+        - "{{rfc_with_state}}"
+    when: rfc_with_state is defined
+    run_once: yes
+
+  - set_fact:
+      total_ctasks: "{{uniquectask}}"
+    run_once: yes
+
+  - name: Ctask check for past and future
+    set_fact:
+      unscheduled_ctask: "{{ unscheduled_ctask|default([]) + [item]}}"
+    when: ctaskresults.results[index].ansible_facts.ctask_type == 'Validation' or ctaskresults.results[index].ansible_facts.ctask_state == 'Closed' or (current_time.stdout  >= ctaskresults.results[index].ansible_facts.start_date and current_time.stdout >= ctaskresults.results[index].ansible_facts.end_date) or (current_time.stdout < ctaskresults.results[index].ansible_facts.start_date )
+    with_items:
+      - "{{uniquectask}}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+
+  - set_fact:
+      unscheduled_check: "{{ unscheduled_check|default([]) + [{'Task': item,'Type': ctaskresults.results[index].ansible_facts.ctask_type,'Start_Date': ctask_check.results[index].json.details[0].task.planned_start_date | regex_replace('T', ' ') | regex_replace('-07:00', ''),'End_Date': ctask_check.results[index].json.details[0].task.planned_end_date | regex_replace('T', ' ') | regex_replace('-07:00', ''),'State': ctask_check.results[index].json.details[0].task.task_state}]}} "
+    with_items:
+      - "{{uniquectask}}"
+    loop_control:
+      index_var: index
+    when: unscheduled_ctask is defined and total_ctasks | length == unscheduled_ctask | length
+    register: unscheduled_check_msg
+    run_once: yes
+
+  - fail:
+      msg:
+        - "Kindly check the ctask details"
+        - "{{unscheduled_check}}"
+    when: unscheduled_check is defined
+    run_once: yes
+
+  - include_tasks: move_ctask.yml
+    vars:
+      state: 'In Progress'
+    when: ctaskresults.results[index].ansible_facts.ctask_type == 'Implementation' and ctaskresults.results[index].ansible_facts.ctask_state == 'Open' and current_time.stdout  >= ctaskresults.results[index].ansible_facts.start_date and current_time.stdout <= ctaskresults.results[index].ansible_facts.end_date
+    with_items:
+      - "{{uniquectask}}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+
+  - import_tasks: fetching_ctask.yml
+
+
+  - name: Fetching CI list from ServiceNow API(CI count)
+    uri:
+      url: "{{SN_URL}}/changes/tasks?search_type=view_ci_from_task&TaskNumber={{item}}"
+      headers:
+        Authorization: "Bearer {{gen_token.json.access_token}}"
+      force_basic_auth: yes
+      validate_certs: no
+      body_format: form-urlencoded
+      status_code: 200
+      dest: "{{ snow_log_path }}/{{current_date.stdout}}/{{ item }}_CI_List.txt"
+    register: check_ci
+    ignore_errors: true
+    when: ctaskresults.results[index].ansible_facts.ctask_type == 'Implementation' and ctask_check.results[index].json.details[0].task.task_state == 'In Progress' and current_time.stdout >= ctaskresults.results[index].ansible_facts.start_date and current_time.stdout <= ctaskresults.results[index].ansible_facts.end_date
+    with_items:
+      - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    run_once: yes
+    delegate_to: localhost
+
+  - name: unable to fetch the ci details
+    fail:
+      msg: "{{check_ci.results[index].msg}}"
+    with_items:
+       - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    run_once: yes
+    when: check_ci.results[index].status is defined and check_ci.results[index].status != 200
+
+  - name: Set the CI count for the ctask
+    set_fact:
+      ctask_with_count: "{{ ctask_with_count|default([]) + [{ 'ctask': check_ci.results[index].item, 'count': check_ci.results[index].json.total_count | int }] }}"
+    when: check_ci.results[index].changed
+    with_items:
+      - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+  - name: Total ctasks that are in In Progress state
+    set_fact:
+      total_ctask: "{{ total_ctask|default([]) + [item.ctask]}}"
+    when: ctask_with_count is defined
+    with_items:
+      - "{{ctask_with_count}}"
+    run_once: yes
+
+  - name: Take the CI's from the ctask if the count of CI is less than 100
+    set_fact:
+      ci_server: "{{check_ci.results | json_query(jmesquery) | flatten | lower}}"
+    vars:
+      jmesquery: "[? item==`{{item.ctask}}`].json.details[*].affected_cis.cmdb_ci"
+    when: item.count <= 100
+    with_items:
+      - "{{ctask_with_count}}"
+    register: ctask_with_ci
+    run_once: yes
+
+
+  - name: Copying the servers from ctask
+    copy:
+      content: "{{check_ci.results | json_query(jmesquery) | to_json}}"
+      dest: "{{ snow_log_path }}/{{current_date.stdout}}/{{item.ctask}}_CI_List.txt"
+      force: yes
+    vars:
+      jmesquery: "[? item==`{{item.ctask}}`].{result: json.details[*].affected_cis}"
+    when: item.count <= 100
+    with_items:
+      - "{{ ctask_with_count }}"
+    run_once: yes
+    no_log: yes
+    delegate_to: localhost
+
+  - name: Take all the CI's < 100 from {{total_ctask}}
+    set_fact:
+      total_ci_fromctask: "{{total_ci_fromctask|default([]) + [item] }}"
+    with_items:
+      - "{{ctask_with_ci.results | json_query('[*].ansible_facts.ci_server') | list | flatten}}"
+    run_once: yes
+    no_log: yes
+
+
+  - name: Take the offset count to scroll the pages on CI's
+    set_fact:
+      ctask_with_iterable: "{{lookup('sequence','start=0 end={{item.count}} stride=100',wantlist=True)}}"
+    when: ctask_with_count is defined and item.count > 100
+    register: ctask_final
+    loop: "{{ctask_with_count}}"
+    run_once: yes
+    no_log: yes
+
+  - name: Take the offset iterable value i.e [0,100,200..etc]
+    set_fact:
+      ctask_with_itervalue: "{{ ctask_with_itervalue|default([]) + [{ 'task': item.item.ctask, 'iter_count': item.ansible_facts.ctask_with_iterable}]}}"
+    when: item.ansible_facts is defined
+    loop: "{{ctask_final.results}}"
+    run_once: yes
+    no_log: yes
+
+  - name: Fetching CI list from ServiceNow API for the CI's more than 100
+    uri:
+      url: "{{SN_URL}}/changes/tasks?search_type=view_ci_from_task&TaskNumber={{item.0.task}}&offset={{item.1 }}"
+      headers:
+        Authorization: "Bearer {{gen_token.json.access_token}}"
+      force_basic_auth: yes
+      validate_certs: no
+      body_format: form-urlencoded
+      status_code: 200
+      dest: "{{ snow_log_path }}/{{current_date.stdout}}/{{item.0.task}}_CI_List_{{item.1 }}.txt"
+    register: check_ci
+    ignore_errors: true
+    with_subelements:
+      - "{{ctask_with_itervalue}}"
+      - iter_count
+    when: ctask_with_itervalue is defined
+    run_once: yes
+    delegate_to: localhost
+    no_log: yes
+
+  - name: unable to fetch the ci details
+    fail:
+      msg: "{{check_ci.results[index].msg}}"
+    with_items:
+       - "{{ uniquectask }}"
+    loop_control:
+      index_var: index
+    run_once: yes
+    when: ctask_with_itervalue is defined and check_ci.results[index].status != 200
+
+  - name: Copying the servers from ctask
+    copy:
+      content: "{{check_ci.results | json_query(jmesquery) | to_json}}"
+      dest: "{{ snow_log_path }}/{{current_date.stdout}}/{{item.ctask}}_CI_List.txt"
+      force: yes
+    vars:
+      jmesquery: "[? item[0].task==`{{item.ctask}}`].{result: json.details[*].affected_cis}"
+    when: item.count > 100
+    with_items:
+      - "{{ ctask_with_count }}"
+    run_once: yes
+    no_log: yes
+    delegate_to: localhost
+
+
+  - name: Take the CI's from the individual ctask if the count of CI is more than 100
+    set_fact:
+      ci_server: "{{check_ci.results | json_query(jmesquery) | flatten | lower}}"
+    vars:
+      jmesquery: "[? item[0].task==`{{item.ctask}}`].json.details[*].affected_cis.cmdb_ci"
+    when: item.count > 100
+    with_items:
+      - "{{ctask_with_count}}"
+    register: ctask_with_ci
+    run_once: yes
+
+  - name: Take all the CI's > 100 from {{total_ctask}}
+    set_fact:
+      total_ci_fromctask: "{{ total_ci_fromctask|default([]) + [item]}}"
+    with_items:
+      - "{{ctask_with_ci.results | json_query('[*].ansible_facts.ci_server') | list | flatten}}"
+    when: ctask_with_itervalue is defined
+    run_once: yes
+    no_log: yes
+
+  - name: Get Missing Servers
+    delegate_to: localhost
+    set_fact:
+      missing_servers: "{{ansible_play_hosts | difference(total_ci_fromctask) }}"
+    when: total_ci_fromctask is defined
+    run_once: yes
+    register: result1
+    no_log: yes
+
+  - name: Final Status
+    delegate_to: localhost
+    set_fact:
+      final_result: "{% if missing_servers|length  == 0 %}PASS{% else %}FAIL{% endif %}"
+    when: missing_servers is defined
+    register: result
+    run_once: yes
+    no_log: yes
+
+
+  - set_fact:
+      servermissing_msg: "{{missing_servers}} not part of the  {{total_ctask}}"
+    when: final_result is defined and final_result == 'FAIL'
+    delegate_to: localhost
+    run_once: true
+    no_log: yes
+
+
+  - debug:
+      msg: "Kindly check the Task details - {{item}} , Type - {{ctaskresults.results[index].ansible_facts.ctask_type}}, start_date - {{ctask_check.results[index].json.details[0].task.planned_start_date | regex_replace('T', ' ') | regex_replace('-07:00', '')}} , end_date - {{ctask_check.results[index].json.details[0].task.planned_end_date | regex_replace('T', ' ') | regex_replace('-07:00', '')}} ,state - {{ctask_check.results[index].json.details[0].task.task_state}} "
+    when: ctaskresults.results[index].ansible_facts.ctask_type == 'Validation' or ctaskresults.results[index].ansible_facts.ctask_state == 'Closed' or (current_time.stdout  >= ctaskresults.results[index].ansible_facts.start_date and current_time.stdout >= ctaskresults.results[index].ansible_facts.end_date) or (current_time.stdout < ctaskresults.results[index].ansible_facts.start_date )
+    with_items:
+      - "{{uniquectask}}"
+    loop_control:
+      index_var: index
+    run_once: yes
+
+  - fail:
+      msg: "{{servermissing_msg}}"
+    when: servermissing_msg is defined
+    delegate_to: localhost
+    run_once: true

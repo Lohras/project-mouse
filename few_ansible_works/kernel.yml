@@ -1,0 +1,60 @@
+
+- name: Push Latest Kernel to Target Boxes
+  hosts: all
+  gather_facts: yes
+  vars:
+    selected_kernel_version: "0.0.0"
+    rhel_kernel_list: ['0']
+
+  tasks:
+  - name: Get All Kernel Versions from Yum
+    yum:
+      list: kernel
+    register: yum_output
+
+  - name: Display Kernel values
+    debug:
+      var: yum_output
+
+  - name: Get Available Kernel in yum repo
+    set_fact:
+      rhel_kernel_list: "{{ yum_output | json_query(\"results[?yumstate=='available'].envra\") }}"
+
+  - name: Display Kernels
+    debug:
+      var: rhel_kernel_list
+
+  - name: Start Comparing all version with first one and pick highest available
+    set_fact:
+      selected_kernel_version: "{{ item }}"
+    loop: "{{ rhel_kernel_list }}"
+    when:
+      - item is version_compare(selected_kernel_version, 'gt')
+
+  - name: Printing Final Kernel Values
+    debug:
+      var: "selected_kernel_version | regex_replace('0:kernel-','')"
+
+  - name: Capturing Current Month from Shell Prompt
+    shell:
+      cmd: "date '+%^b-%y'"
+    register: patchmonth
+    delegate_to: localhost
+
+  - name: Displaying Current Month
+    debug:
+      var: patchmonth
+
+  - name: Upload the data to TOP DB database
+    uri:
+      url: "https://{{ordsHostName}}:{{ordsPort}}/ords/timsdbc/autopatchmodule/patchinfo"
+      method: POST
+      body_format: json
+      body:
+        os_name: "{{ansible_distribution}}-{{ansible_distribution_major_version}}"
+        os_type: "LINUX"
+        patching_month: "{{patchmonth.stdout}}"
+        patch_value: "{{selected_kernel_version | regex_replace('0:kernel-','')}}"
+        validate_certs: false
+      status_code: 200
+    delegate_to: localhost
