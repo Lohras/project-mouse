@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "project-mouse.fullname" . }}-test-connection"
+  labels:
+    {{- include "project-mouse.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      args: ['{{ include "project-mouse.fullname" . }}:{{ .Values.service.port }}']
+  restartPolicy: Never
