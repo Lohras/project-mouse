@@ -62,7 +62,7 @@ resource "aws_route" "privateroute" {
 
 resource "aws_key_pair" "deployer" {
   key_name   = "deployer-key"
-  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC9FVZci53q2H7qQE6aVZ07EBTr7s6oWAzr3G6PPyLDG4kKQCfgtU/mQCQ4M+6yUMYh6c3y4aHs35rriuXSsID2VPPsVu3u53AN15k/y8CukqaEhDc2XirNNyH8by0XRzsyZ8jcd5thUUdhovfG6FQyFLHOJ0XDD4l64kWnTBzEyYxYVqCUHA7Jy4m6FEEOML3yPj84peHdhdx6l3TpJvbD1wMB3AWimtn+2JKjFHjKfpkxP3BTagreHxdj/kENa//y6O99Z0pilyxFeJN/6Cf7Y42VHrKdYhDKEiMkvZOa97+hkGK+fzQ3UQVqcIzSq5sOO+oB5orcpJp/0szco93SSco6ONxGlaXCiwJZ0d0a92dp1I+ixO/6KNmasHEF44CypUH1celY0DOZsd5iqhkum5nOHmYiCkwqLQkMcn7U2DJNd7FmgTTriA1E2GJLKUvKpJ/pCDVCW34vcIw3KIRFesN7yvQokSIqwhdQW/MvgXxLVEGp20VSiNjU5vwOc10= aravinth@Aravinth"
+  public_key = ""
 }
 
 resource "aws_security_group_rule" "myingress" {
